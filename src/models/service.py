@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from typing import ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from typing_extensions import Self
@@ -133,23 +134,49 @@ class Service(Generic, EasyResource):
         **kwargs
     ) -> Mapping[str, ValueTypes]:
         
-        if command.get("listen_for_command"):
+        if command.get("force_command"):
+            return await self.handle_readings(command.get("force_command"))
+        elif command.get("listen_for_command"):
             # Get readings from the sensor
             readings = await self.sensor.get_readings()
-            if readings.get("heard") in [None, ""]:
-                return {"status": "no voice command heard"}
-            else: 
-                commands_heard = []
-                for phrase in self.commands.keys():
-                    if phrase.lower() in readings.get("heard").lower():
-                        angles = self.commands[phrase]
-                        for angle in angles:
-                            await self.servo.move(angle)
-                            await asyncio.sleep(1)
-                            self.logger.debug(f"Moving servo to angle {angle} for command {phrase}")
-                        commands_heard.append(phrase)
-                if len(commands_heard) > 0:
-                    return {"status": "voice commands heard", "voice_commands": commands_heard, "heard": readings.get("heard")}
-                else:
-                    return {"status": "no voice commands heard", "heard": readings.get("heard")}
+            return await self.handle_readings(readings.get("heard"))
 
+    async def handle_readings(self, readings: str) -> Mapping[str, ValueTypes]:
+        if readings in [None, ""]:
+            return {"status": "no voice command heard"}
+        else:
+            commands_heard = []
+            for phrase in self.commands.keys():
+                if phrase.lower() in readings.lower():
+                    sound_promise = self.play_sound()
+                    angles = self.commands[phrase]
+                    for angle in angles:
+                        await self.servo.move(angle)
+                        await asyncio.sleep(1)
+                        self.logger.debug(f"Moving servo to angle {angle} for command {phrase}")
+                    await sound_promise
+                    commands_heard.append(phrase)
+            if len(commands_heard) > 0:
+                return {"status": "voice commands heard", "voice_commands": commands_heard, "heard": readings}
+            else:
+                return {"status": "no voice commands heard", "heard": readings}
+
+    async def play_sound(self):
+        try:
+            # Set volume
+            subprocess.run(["amixer", "-c", "UACDemoV10", "set", "PCM", "90%"], 
+                         check=True, capture_output=True, text=True)
+            self.logger.debug("Volume set to 90%")
+            
+            # Play the sound file
+            subprocess.run(["aplay", "-D", "plughw:UACDemoV10", "/home/steve/sound.wav"], 
+                         check=True, capture_output=True, text=True)
+            self.logger.debug("Sound file played successfully")
+            
+            return {"status": "success", "message": "Sound played"}
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to execute sound command: {e}")
+            return {"status": "error", "message": f"Command failed: {e}"}
+        except Exception as e:
+            self.logger.error(f"Unexpected error in sound command: {e}")
+            return {"status": "error", "message": f"Unexpected error: {e}"}
